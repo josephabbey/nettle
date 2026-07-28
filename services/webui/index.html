@@ -29,6 +29,11 @@
         <div class="sub">Local names and dynamic host records</div>
       </div>
       <div class="card">
+        <div class="label">Static IPs</div>
+        <div class="value" id="static-count">0</div>
+        <div class="sub">Statically assigned host entries</div>
+      </div>
+      <div class="card">
         <div class="label">Lease focus</div>
         <div class="value" id="lease-active">0</div>
         <div class="sub">Matching rows in the current filter</div>
@@ -36,6 +41,11 @@
       <div class="card">
         <div class="label">DNS focus</div>
         <div class="value" id="dns-active">0</div>
+        <div class="sub">Matching rows in the current filter</div>
+      </div>
+      <div class="card">
+        <div class="label">Static focus</div>
+        <div class="value" id="static-active">0</div>
         <div class="sub">Matching rows in the current filter</div>
       </div>
     </section>
@@ -89,6 +99,30 @@
             </tr>
           </thead>
           <tbody id="dns-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Static IPs</h2>
+          <div class="meta">Permanent assignments from config, hosts, and ethers.</div>
+        </div>
+        <div class="filters">
+          <input id="static-filter" type="search" placeholder="Filter static IPs">
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Hostname</th>
+              <th>Hardware Addr</th>
+              <th>Address</th>
+            </tr>
+          </thead>
+          <tbody id="static-body"></tbody>
         </table>
       </div>
     </section>

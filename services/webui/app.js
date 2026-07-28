@@ -2,6 +2,7 @@ const state = {
   generatedAt: null,
   leases: [],
   dnsRecords: [],
+  staticHosts: [],
 };
 
 const els = {
@@ -9,12 +10,16 @@ const els = {
   feedStatus: document.getElementById('feed-status'),
   leaseCount: document.getElementById('lease-count'),
   dnsCount: document.getElementById('dns-count'),
+  staticCount: document.getElementById('static-count'),
   leaseActive: document.getElementById('lease-active'),
   dnsActive: document.getElementById('dns-active'),
+  staticActive: document.getElementById('static-active'),
   leaseBody: document.getElementById('lease-body'),
   dnsBody: document.getElementById('dns-body'),
+  staticBody: document.getElementById('static-body'),
   leaseFilter: document.getElementById('lease-filter'),
   dnsFilter: document.getElementById('dns-filter'),
+  staticFilter: document.getElementById('static-filter'),
 };
 
 function canonical(value) {
@@ -49,6 +54,7 @@ function applySnapshot(snapshot) {
   state.generatedAt = snapshot.generatedAt || null;
   state.leases = Array.isArray(snapshot.leases) ? snapshot.leases : [];
   state.dnsRecords = Array.isArray(snapshot.dnsRecords) ? snapshot.dnsRecords : [];
+  state.staticHosts = Array.isArray(snapshot.staticHosts) ? snapshot.staticHosts : [];
   render();
 }
 
@@ -64,12 +70,25 @@ function upsertDNS(record) {
   render();
 }
 
-function renderCards(filteredLeaseCount, filteredDNSCount) {
+function upsertStatic(entry) {
+  if (!entry || !entry.hostname) return;
+  const index = state.staticHosts.findIndex((s) => s.hostname === entry.hostname && s.hardwareAddr === entry.hardwareAddr);
+  if (index >= 0) {
+    state.staticHosts[index] = entry;
+  } else {
+    state.staticHosts.push(entry);
+  }
+  render();
+}
+
+function renderCards(filteredLeaseCount, filteredDNSCount, filteredStaticCount) {
   els.generatedAt.textContent = state.generatedAt ? formatTime(state.generatedAt) : 'waiting...';
   els.leaseCount.textContent = String(state.leases.length);
   els.dnsCount.textContent = String(state.dnsRecords.length);
+  els.staticCount.textContent = String(state.staticHosts.length);
   els.leaseActive.textContent = String(filteredLeaseCount);
   els.dnsActive.textContent = String(filteredDNSCount);
+  els.staticActive.textContent = String(filteredStaticCount);
 }
 
 function renderLeases() {
@@ -148,10 +167,42 @@ function renderDNS() {
   return filtered.length;
 }
 
+function renderStatics() {
+  const term = canonical(els.staticFilter.value);
+  const filtered = state.staticHosts.filter((row) => matches(row, term));
+  els.staticBody.innerHTML = '';
+  if (filtered.length === 0) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 3;
+    td.className = 'empty';
+    td.textContent = 'No static IPs match the current filter.';
+    tr.appendChild(td);
+    els.staticBody.appendChild(tr);
+    return filtered.length;
+  }
+  for (const row of filtered) {
+    const tr = document.createElement('tr');
+    const cells = [
+      row.hostname || 'n/a',
+      row.hardwareAddr || 'n/a',
+      row.address || 'n/a',
+    ];
+    for (const value of cells) {
+      const td = document.createElement('td');
+      td.textContent = value;
+      tr.appendChild(td);
+    }
+    els.staticBody.appendChild(tr);
+  }
+  return filtered.length;
+}
+
 function render() {
   const leaseCount = renderLeases();
   const dnsCount = renderDNS();
-  renderCards(leaseCount, dnsCount);
+  const staticCount = renderStatics();
+  renderCards(leaseCount, dnsCount, staticCount);
 }
 
 async function loadState() {
@@ -174,6 +225,9 @@ function connectFeed() {
   source.addEventListener('dns', (event) => {
     upsertDNS(JSON.parse(event.data));
   });
+  source.addEventListener('static', (event) => {
+    upsertStatic(JSON.parse(event.data));
+  });
   source.onerror = () => {
     els.feedStatus.textContent = 'reconnecting';
   };
@@ -182,6 +236,7 @@ function connectFeed() {
 
 els.leaseFilter.addEventListener('input', render);
 els.dnsFilter.addEventListener('input', render);
+els.staticFilter.addEventListener('input', render);
 
 loadState()
   .catch(() => {

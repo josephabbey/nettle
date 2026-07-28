@@ -109,14 +109,15 @@ type HostRecord struct {
 }
 
 type Config struct {
-	Global  GlobalConfig
-	Logging LoggingConfig
-	DHCP    DHCPConfig
-	DNS     DNSConfig
-	Web     WebConfig
-	VPN     VPNConfig
-	Glue    []GlueConfig
-	Hosts   []HostRecord
+	Global      GlobalConfig
+	Logging     LoggingConfig
+	DHCP        DHCPConfig
+	DNS         DNSConfig
+	Web         WebConfig
+	VPN         VPNConfig
+	Glue        []GlueConfig
+	Hosts       []HostRecord
+	StaticHosts []StaticHost
 }
 
 type allocationInterval struct {

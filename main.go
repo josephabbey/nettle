@@ -42,6 +42,18 @@ func run() error {
 		return err
 	}
 
+	hostsFileRecords, err := config.ReadHostsFile(cfg.Global.HostsFile)
+	if err != nil {
+		return err
+	}
+	cfg.Hosts = append(cfg.Hosts, hostsFileRecords...)
+
+	ethers, err := config.ReadEthersFile(cfg.Global.EthersFile)
+	if err != nil {
+		return err
+	}
+	cfg.StaticHosts = config.DeriveStaticHosts(cfg.Hosts, ethers)
+
 	if *logLevel != "" {
 		cfg.Logging.Level = *logLevel
 	}

@@ -36,10 +36,11 @@ type WebService struct {
 }
 
 type webStore struct {
-	mu         sync.RWMutex
-	leases     map[string]leaseView
-	dnsRecords map[string]dnsRecordView
-	updatedAt  time.Time
+	mu          sync.RWMutex
+	leases      map[string]leaseView
+	dnsRecords  map[string]dnsRecordView
+	staticHosts []staticHostView
+	updatedAt   time.Time
 }
 
 type webFeed struct {
@@ -54,15 +55,23 @@ type webEvent struct {
 }
 
 type webState struct {
-	GeneratedAt time.Time       `json:"generatedAt"`
-	Counts      webCounts       `json:"counts"`
-	Leases      []leaseView     `json:"leases"`
-	DNSRecords  []dnsRecordView `json:"dnsRecords"`
+	GeneratedAt time.Time         `json:"generatedAt"`
+	Counts      webCounts         `json:"counts"`
+	Leases      []leaseView       `json:"leases"`
+	DNSRecords  []dnsRecordView   `json:"dnsRecords"`
+	StaticHosts []staticHostView  `json:"staticHosts"`
 }
 
 type webCounts struct {
-	Leases     int `json:"leases"`
-	DNSRecords int `json:"dnsRecords"`
+	Leases      int `json:"leases"`
+	DNSRecords  int `json:"dnsRecords"`
+	StaticHosts int `json:"staticHosts"`
+}
+
+type staticHostView struct {
+	Hostname     string `json:"hostname"`
+	HardwareAddr string `json:"hardwareAddr"`
+	Address      string `json:"address"`
 }
 
 type leaseView struct {
@@ -194,6 +203,7 @@ func (s *WebService) routes() http.Handler {
 	mux.HandleFunc("/api/state", s.serveState)
 	mux.HandleFunc("/api/leases", s.serveLeases)
 	mux.HandleFunc("/api/dns-records", s.serveDNSRecords)
+	mux.HandleFunc("/api/static-hosts", s.serveStaticHosts)
 	mux.HandleFunc("/events", s.serveEvents)
 	return mux
 }
@@ -222,6 +232,10 @@ func (s *WebService) serveLeases(w http.ResponseWriter, r *http.Request) {
 
 func (s *WebService) serveDNSRecords(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.store.snapshot().DNSRecords)
+}
+
+func (s *WebService) serveStaticHosts(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.store.snapshot().StaticHosts)
 }
 
 func (s *WebService) serveEvents(w http.ResponseWriter, r *http.Request) {
@@ -283,6 +297,9 @@ func (s *WebService) consumeEvents(events <-chan bus.Event) {
 				if view.Name != "" {
 					s.feed.publish(webEvent{Type: "dns", Data: view})
 				}
+			case domain.StaticHostUpserted:
+				view := s.store.upsertStaticHost(ev.StaticHost)
+				s.feed.publish(webEvent{Type: "static", Data: view})
 			case domain.DHCPLeaseAssigned:
 				leaseView := s.store.upsertLease(ev.Lease)
 				s.feed.publish(webEvent{Type: "lease", Data: leaseView})
@@ -303,8 +320,16 @@ func (s *WebService) consumeEvents(events <-chan bus.Event) {
 
 func newWebStore(cfg *config.Config) *webStore {
 	store := &webStore{
-		leases:     map[string]leaseView{},
-		dnsRecords: map[string]dnsRecordView{},
+		leases:      map[string]leaseView{},
+		dnsRecords:  map[string]dnsRecordView{},
+		staticHosts: []staticHostView{},
+	}
+	for _, sh := range cfg.StaticHosts {
+		store.staticHosts = append(store.staticHosts, staticHostView{
+			Hostname:     strings.TrimSpace(sh.Hostname),
+			HardwareAddr: strings.TrimSpace(sh.HardwareAddr),
+			Address:      sh.Address.String(),
+		})
 	}
 	for _, host := range cfg.Hosts {
 		record := domain.DNSRecord{
@@ -343,14 +368,19 @@ func (s *webStore) snapshot() webState {
 		return dnsRecords[i].Name < dnsRecords[j].Name
 	})
 
+	staticHosts := make([]staticHostView, len(s.staticHosts))
+	copy(staticHosts, s.staticHosts)
+
 	return webState{
 		GeneratedAt: s.updatedAt,
 		Counts: webCounts{
-			Leases:     len(leases),
-			DNSRecords: len(dnsRecords),
+			Leases:      len(leases),
+			DNSRecords:  len(dnsRecords),
+			StaticHosts: len(staticHosts),
 		},
-		Leases:     leases,
-		DNSRecords: dnsRecords,
+		Leases:      leases,
+		DNSRecords:  dnsRecords,
+		StaticHosts: staticHosts,
 	}
 }
 
@@ -368,6 +398,31 @@ func (s *webStore) upsertLease(lease domain.Lease) leaseView {
 	s.mu.Lock()
 	s.leases[view.Key] = view
 	s.updatedAt = view.UpdatedAt
+	s.mu.Unlock()
+
+	return view
+}
+
+func (s *webStore) upsertStaticHost(staticHost domain.StaticHost) staticHostView {
+	view := staticHostView{
+		Hostname:     strings.TrimSpace(staticHost.Hostname),
+		HardwareAddr: strings.TrimSpace(staticHost.HardwareAddr),
+		Address:      staticHost.Address.String(),
+	}
+
+	s.mu.Lock()
+	found := false
+	for i, sh := range s.staticHosts {
+		if sh.Hostname == view.Hostname && sh.HardwareAddr != "" {
+			s.staticHosts[i] = view
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.staticHosts = append(s.staticHosts, view)
+	}
+	s.updatedAt = time.Now().UTC()
 	s.mu.Unlock()
 
 	return view

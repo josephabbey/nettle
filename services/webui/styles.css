@@ -67,7 +67,7 @@ main {
 
 .cards {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
 }
 
@@ -198,7 +198,7 @@ tbody tr:hover { background: rgba(125, 211, 252, 0.04); }
   color: var(--muted);
 }
 
-@media (max-width: 1080px) {
+@media (max-width: 1200px) {
   .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 

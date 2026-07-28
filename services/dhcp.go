@@ -51,6 +51,14 @@ type leasePool struct {
 	leasesMu sync.Mutex
 	routesMu sync.RWMutex
 	routes   []domain.Route
+
+	staticByMAC  map[string]staticAssignment
+	staticIPs    map[string]struct{}
+}
+
+type staticAssignment struct {
+	Address  netip.Addr
+	Hostname string
 }
 
 type leaseState struct {
@@ -173,13 +181,13 @@ func (s *DHCPService) Stop(ctx context.Context) error {
 
 func (s *DHCPService) buildPools() ([]*leasePool, error) {
 	var pools []*leasePool
-	if pool, err := newLeasePool("main", s.cfg.DHCP.Main, s.cfg.DHCP.Gateway, s.cfg.DHCP.DNS, s.cfg.DHCP.NTP, s.bus); err != nil {
+	if pool, err := newLeasePool("main", s.cfg.DHCP.Main, s.cfg.DHCP.Gateway, s.cfg.DHCP.DNS, s.cfg.DHCP.NTP, s.cfg.StaticHosts, s.bus); err != nil {
 		return nil, err
 	} else if pool != nil {
 		pools = append(pools, pool)
 	}
 	if s.cfg.DHCP.Guest != nil {
-		if pool, err := newLeasePool("guest", *s.cfg.DHCP.Guest, s.cfg.DHCP.Gateway, s.cfg.DHCP.DNS, s.cfg.DHCP.NTP, s.bus); err != nil {
+		if pool, err := newLeasePool("guest", *s.cfg.DHCP.Guest, s.cfg.DHCP.Gateway, s.cfg.DHCP.DNS, s.cfg.DHCP.NTP, s.cfg.StaticHosts, s.bus); err != nil {
 			return nil, err
 		} else if pool != nil {
 			pools = append(pools, pool)
@@ -188,7 +196,7 @@ func (s *DHCPService) buildPools() ([]*leasePool, error) {
 	return pools, nil
 }
 
-func newLeasePool(name string, assign config.Assignment, gateway *netip.Addr, dnsServers []netip.Addr, ntp *netip.Addr, b bus.Bus) (*leasePool, error) {
+func newLeasePool(name string, assign config.Assignment, gateway *netip.Addr, dnsServers []netip.Addr, ntp *netip.Addr, statics []config.StaticHost, b bus.Bus) (*leasePool, error) {
 	if !assign.IsConfigured() {
 		return nil, nil
 	}
@@ -205,7 +213,8 @@ func newLeasePool(name string, assign config.Assignment, gateway *netip.Addr, dn
 	if assign.Interface == "" {
 		assign.Interface = ""
 	}
-	return &leasePool{
+
+	pool := &leasePool{
 		name:   name,
 		assign: assign,
 		start:  start,
@@ -218,7 +227,24 @@ func newLeasePool(name string, assign config.Assignment, gateway *netip.Addr, dn
 		gateway:    gateway,
 		dnsServers: dnsServers,
 		ntp:        ntp,
-	}, nil
+
+		staticByMAC: map[string]staticAssignment{},
+		staticIPs:   map[string]struct{}{},
+	}
+
+	for _, sh := range statics {
+		if sh.HardwareAddr == "" || !sh.Address.IsValid() || !sh.Address.Is4() {
+			continue
+		}
+		mac := strings.ToLower(strings.TrimSpace(sh.HardwareAddr))
+		pool.staticByMAC[mac] = staticAssignment{
+			Address:  sh.Address,
+			Hostname: sh.Hostname,
+		}
+		pool.staticIPs[sh.Address.String()] = struct{}{}
+	}
+
+	return pool, nil
 }
 
 func assignmentBounds(assign config.Assignment) (netip.Addr, netip.Addr, error) {
@@ -377,18 +403,31 @@ func (p *leasePool) handler(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4
 }
 
 func (p *leasePool) allocate(req *dhcpv4.DHCPv4) (netip.Addr, error) {
-	key := p.hardwareAddr(req)
+	mac := strings.ToLower(p.hardwareAddr(req))
+	key := mac
 	if key == "" {
 		key = fmt.Sprintf("%x", req.TransactionID)
 	}
 
 	now := time.Now()
+
+	if sa, ok := p.staticByMAC[mac]; ok && p.addrInRange(sa.Address) {
+		p.leasesMu.Lock()
+		p.leases[key] = leaseState{
+			Address:   sa.Address,
+			ExpiresAt: now.Add(p.assign.Lease),
+			Hostname:  sa.Hostname,
+		}
+		p.leasesMu.Unlock()
+		return sa.Address, nil
+	}
+
 	if lease, ok := p.leases[key]; ok && now.Before(lease.ExpiresAt) {
 		return lease.Address, nil
 	}
 
 	for candidate := p.next; candidate.IsValid() && candidate.Compare(p.end) <= 0; candidate = candidate.Next() {
-		if !p.taken(candidate, now) {
+		if !p.taken(candidate, now) && !p.isStatic(candidate) {
 			p.leases[key] = leaseState{
 				Address:   candidate,
 				ExpiresAt: now.Add(p.assign.Lease),
@@ -399,6 +438,15 @@ func (p *leasePool) allocate(req *dhcpv4.DHCPv4) (netip.Addr, error) {
 		}
 	}
 	return netip.Addr{}, errors.New("lease pool exhausted")
+}
+
+func (p *leasePool) addrInRange(addr netip.Addr) bool {
+	return addr.Compare(p.start) >= 0 && addr.Compare(p.end) <= 0
+}
+
+func (p *leasePool) isStatic(addr netip.Addr) bool {
+	_, ok := p.staticIPs[addr.String()]
+	return ok
 }
 
 func (p *leasePool) taken(addr netip.Addr, now time.Time) bool {

@@ -46,3 +46,13 @@ type RouteAnnounced struct {
 type PeerStateChanged struct {
 	Peer Peer
 }
+
+type StaticHost struct {
+	Hostname     string
+	HardwareAddr string
+	Address      netip.Addr
+}
+
+type StaticHostUpserted struct {
+	StaticHost StaticHost
+}
