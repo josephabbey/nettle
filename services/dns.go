@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -213,6 +214,13 @@ func (s *DNSService) serveDNS(w dns.ResponseWriter, r *dns.Msg) {
 	}
 
 	q := r.Question[0]
+
+	if s.isBlocked(q.Name) {
+		msg.Rcode = dns.RcodeNameError
+		_ = w.WriteMsg(msg)
+		return
+	}
+
 	if record, ok := s.store.lookup(q.Name); ok {
 		if rr := recordToRR(q.Name, q.Qtype, record); len(rr) > 0 {
 			msg.Answer = append(msg.Answer, rr...)
@@ -230,12 +238,48 @@ func (s *DNSService) serveDNS(w dns.ResponseWriter, r *dns.Msg) {
 	_ = w.WriteMsg(msg)
 }
 
+func (s *DNSService) isBlocked(name string) bool {
+	name = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
+	for _, blocked := range s.cfg.DNS.Blocked {
+		b := strings.ToLower(strings.TrimSpace(blocked))
+		if strings.HasPrefix(b, "*.") {
+			suffix := b[1:]
+			if strings.HasSuffix(name, suffix) {
+				return true
+			}
+		} else if name == b || strings.HasSuffix(name, "."+b) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *DNSService) forwardUpstream(r *dns.Msg) (*dns.Msg, bool) {
-	if len(s.cfg.DNS.Upstreams) == 0 {
+	if len(r.Question) == 0 {
 		return nil, false
 	}
+	q := r.Question[0]
+	name := strings.ToLower(strings.TrimSuffix(q.Name, "."))
+
+	if len(s.cfg.DNS.RecursiveUpstreams) > 0 {
+		for zone, addr := range s.cfg.DNS.RecursiveUpstreams {
+			zone = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(zone), "."))
+			if name == zone || strings.HasSuffix(name, "."+zone) {
+				return s.forwardTo(addr, r)
+			}
+		}
+	}
+
+	for _, upstream := range s.cfg.DNS.Upstreams {
+		if resp, ok := s.forwardTo(upstream, r); ok {
+			return resp, true
+		}
+	}
+	return nil, false
+}
+
+func (s *DNSService) forwardTo(upstream netip.Addr, r *dns.Msg) (*dns.Msg, bool) {
 	client := &dns.Client{Net: s.cfg.DNS.Network}
-	upstream := s.cfg.DNS.Upstreams[0]
 	resp, _, err := client.Exchange(r, net.JoinHostPort(upstream.String(), "53"))
 	if err != nil {
 		s.log.Debug("dns upstream failed", "upstream", upstream.String(), "error", err)
@@ -254,6 +298,14 @@ func recordToRR(qname string, qtype uint16, record domain.DNSRecord) []dns.RR {
 			Hdr: dns.RR_Header{Name: dns.Fqdn(qname), Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
 			A:   net.IP(record.Addr.AsSlice()),
 		}}
+	case dns.TypeAAAA:
+		if record.Addr == nil || !record.Addr.Is6() {
+			return nil
+		}
+		return []dns.RR{&dns.AAAA{
+			Hdr:  dns.RR_Header{Name: dns.Fqdn(qname), Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 60},
+			AAAA: net.IP(record.Addr.AsSlice()),
+		}}
 	case dns.TypeCNAME:
 		if record.CNAME == "" {
 			return nil
@@ -269,11 +321,19 @@ func recordToRR(qname string, qtype uint16, record domain.DNSRecord) []dns.RR {
 				Target: dns.Fqdn(record.CNAME),
 			}}
 		}
-		if record.Addr != nil && record.Addr.Is4() {
-			return []dns.RR{&dns.A{
-				Hdr: dns.RR_Header{Name: dns.Fqdn(qname), Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
-				A:   net.IP(record.Addr.AsSlice()),
-			}}
+		if record.Addr != nil {
+			if record.Addr.Is4() {
+				return []dns.RR{&dns.A{
+					Hdr: dns.RR_Header{Name: dns.Fqdn(qname), Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+					A:   net.IP(record.Addr.AsSlice()),
+				}}
+			}
+			if record.Addr.Is6() {
+				return []dns.RR{&dns.AAAA{
+					Hdr:  dns.RR_Header{Name: dns.Fqdn(qname), Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 60},
+					AAAA: net.IP(record.Addr.AsSlice()),
+				}}
+			}
 		}
 		return nil
 	}

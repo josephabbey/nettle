@@ -29,8 +29,9 @@ type DHCPService struct {
 	servers []*server4.Server
 	pools   []*leasePool
 
-	mu      sync.Mutex
-	started bool
+	unsubscribe func()
+	mu          sync.Mutex
+	started     bool
 }
 
 type leasePool struct {
@@ -42,6 +43,14 @@ type leasePool struct {
 	leases map[string]leaseState
 	log    *slog.Logger
 	bus    bus.Bus
+
+	gateway    *netip.Addr
+	dnsServers []netip.Addr
+	ntp        *netip.Addr
+
+	leasesMu sync.Mutex
+	routesMu sync.RWMutex
+	routes   []domain.Route
 }
 
 type leaseState struct {
@@ -106,9 +115,26 @@ func (s *DHCPService) Start(ctx context.Context) error {
 		}(pool.name, server)
 	}
 
+	if s.bus != nil {
+		events, unsubscribe := s.bus.Subscribe(32)
+		s.unsubscribe = unsubscribe
+		go s.consumeEvents(events)
+	}
+
 	go func() {
-		<-s.ctx.Done()
-		_ = s.Stop(context.Background())
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.ctx.Done():
+				_ = s.Stop(context.Background())
+				return
+			case <-ticker.C:
+				for _, pool := range s.pools {
+					pool.expireLeases()
+				}
+			}
+		}
 	}()
 
 	s.log.Info("dhcp service started", "servers", len(s.servers))
@@ -122,6 +148,10 @@ func (s *DHCPService) Stop(ctx context.Context) error {
 		return nil
 	}
 	s.started = false
+	if s.unsubscribe != nil {
+		s.unsubscribe()
+		s.unsubscribe = nil
+	}
 	if s.cancel != nil {
 		s.cancel()
 		s.cancel = nil
@@ -143,13 +173,13 @@ func (s *DHCPService) Stop(ctx context.Context) error {
 
 func (s *DHCPService) buildPools() ([]*leasePool, error) {
 	var pools []*leasePool
-	if pool, err := newLeasePool("main", s.cfg.DHCP.Main, s.cfg.DHCP.Gateway, s.cfg.DHCP.DNS, s.bus); err != nil {
+	if pool, err := newLeasePool("main", s.cfg.DHCP.Main, s.cfg.DHCP.Gateway, s.cfg.DHCP.DNS, s.cfg.DHCP.NTP, s.bus); err != nil {
 		return nil, err
 	} else if pool != nil {
 		pools = append(pools, pool)
 	}
 	if s.cfg.DHCP.Guest != nil {
-		if pool, err := newLeasePool("guest", *s.cfg.DHCP.Guest, s.cfg.DHCP.Gateway, s.cfg.DHCP.DNS, s.bus); err != nil {
+		if pool, err := newLeasePool("guest", *s.cfg.DHCP.Guest, s.cfg.DHCP.Gateway, s.cfg.DHCP.DNS, s.cfg.DHCP.NTP, s.bus); err != nil {
 			return nil, err
 		} else if pool != nil {
 			pools = append(pools, pool)
@@ -158,7 +188,7 @@ func (s *DHCPService) buildPools() ([]*leasePool, error) {
 	return pools, nil
 }
 
-func newLeasePool(name string, assign config.Assignment, gateway *netip.Addr, dnsServers []netip.Addr, b bus.Bus) (*leasePool, error) {
+func newLeasePool(name string, assign config.Assignment, gateway *netip.Addr, dnsServers []netip.Addr, ntp *netip.Addr, b bus.Bus) (*leasePool, error) {
 	if !assign.IsConfigured() {
 		return nil, nil
 	}
@@ -184,6 +214,10 @@ func newLeasePool(name string, assign config.Assignment, gateway *netip.Addr, dn
 		leases: map[string]leaseState{},
 		log:    slog.Default().With("component", "dhcp", "pool", name),
 		bus:    b,
+
+		gateway:    gateway,
+		dnsServers: dnsServers,
+		ntp:        ntp,
 	}, nil
 }
 
@@ -228,8 +262,43 @@ func prefixEnd(prefix netip.Prefix) (netip.Addr, error) {
 	return cur.Prev(), nil
 }
 
+func (s *DHCPService) consumeEvents(events <-chan bus.Event) {
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case event, ok := <-events:
+			if !ok {
+				return
+			}
+			switch ev := event.(type) {
+			case domain.RouteAnnounced:
+				for _, pool := range s.pools {
+					pool.addRoute(ev.Route)
+				}
+			}
+		}
+	}
+}
+
 func (p *leasePool) handler(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 	p.log.Info("dhcp packet", "peer", peer.String(), "message", m.MessageType().String(), "summary", m.Summary())
+
+	if m.MessageType() == dhcpv4.MessageTypeRelease {
+		key := p.hardwareAddr(m)
+		p.leasesMu.Lock()
+		if key == "" {
+			key = fmt.Sprintf("%x", m.TransactionID)
+		}
+		delete(p.leases, key)
+		p.leasesMu.Unlock()
+		p.log.Info("dhcp release", "mac", key)
+		return
+	}
+
+	if m.MessageType() != dhcpv4.MessageTypeDiscover && m.MessageType() != dhcpv4.MessageTypeRequest {
+		return
+	}
 
 	ip, err := p.allocate(m)
 	if err != nil {
@@ -268,6 +337,37 @@ func (p *leasePool) handler(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4
 		dhcpv4.WithYourIP(net.IP(ip.AsSlice())),
 		dhcpv4.WithLeaseTime(uint32(p.assign.Lease / time.Second)),
 	}
+
+	if p.gateway != nil {
+		modifiers = append(modifiers, dhcpv4.WithRouter(net.IP(p.gateway.AsSlice())))
+	}
+	if len(p.dnsServers) > 0 {
+		dnsIPs := make([]net.IP, len(p.dnsServers))
+		for i, dns := range p.dnsServers {
+			dnsIPs[i] = net.IP(dns.AsSlice())
+		}
+		modifiers = append(modifiers, dhcpv4.WithDNS(dnsIPs...))
+	}
+	if p.ntp != nil {
+		ntpIP := net.IP(p.ntp.AsSlice()).To4()
+		if ntpIP != nil {
+			modifiers = append(modifiers, dhcpv4.WithOption(dhcpv4.OptNTPServers(ntpIP)))
+		}
+	}
+	if p.assign.Prefix != nil {
+		mask := net.CIDRMask(p.assign.Prefix.Bits(), 32)
+		modifiers = append(modifiers, dhcpv4.WithNetmask(mask))
+	}
+
+	p.routesMu.RLock()
+	if len(p.routes) > 0 {
+		dhcpRoutes := p.toDHCPRoutes()
+		if len(dhcpRoutes) > 0 {
+			modifiers = append(modifiers, dhcpv4.WithOption(dhcpv4.OptClasslessStaticRoute(dhcpRoutes...)))
+		}
+	}
+	p.routesMu.RUnlock()
+
 	reply, err := dhcpv4.NewReplyFromRequest(m, modifiers...)
 	if err != nil {
 		p.log.Warn("failed to build dhcp reply", "error", err)
@@ -322,4 +422,49 @@ func addrPtr(addr netip.Addr) *netip.Addr {
 		return nil
 	}
 	return &addr
+}
+
+func (p *leasePool) addRoute(route domain.Route) {
+	p.routesMu.Lock()
+	defer p.routesMu.Unlock()
+	for i, r := range p.routes {
+		if r.Prefix == route.Prefix {
+			p.routes[i] = route
+			return
+		}
+	}
+	p.routes = append(p.routes, route)
+}
+
+func (p *leasePool) toDHCPRoutes() []*dhcpv4.Route {
+	var dhcpRoutes []*dhcpv4.Route
+	for _, route := range p.routes {
+		if !route.Prefix.IsValid() || !route.Prefix.Addr().Is4() {
+			continue
+		}
+		if route.Gateway == nil || !route.Gateway.Is4() {
+			continue
+		}
+		mask := net.CIDRMask(route.Prefix.Bits(), 32)
+		dest := &net.IPNet{
+			IP:   net.IP(route.Prefix.Addr().AsSlice()),
+			Mask: mask,
+		}
+		dhcpRoutes = append(dhcpRoutes, &dhcpv4.Route{
+			Dest:   dest,
+			Router: net.IP(route.Gateway.AsSlice()),
+		})
+	}
+	return dhcpRoutes
+}
+
+func (p *leasePool) expireLeases() {
+	now := time.Now()
+	p.leasesMu.Lock()
+	defer p.leasesMu.Unlock()
+	for key, lease := range p.leases {
+		if now.After(lease.ExpiresAt) {
+			delete(p.leases, key)
+		}
+	}
 }

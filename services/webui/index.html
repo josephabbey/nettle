@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nettle Monitor</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script defer src="/assets/app.js"></script>
+</head>
+<body>
+  <header>
+    <div class="eyebrow">Nettle monitoring console</div>
+    <h1>Live leases and DNS records</h1>
+    <div class="summary">
+      <div>State refreshed at <strong id="generated-at">waiting...</strong></div>
+      <div>Live feed <strong id="feed-status">connecting</strong></div>
+    </div>
+  </header>
+  <main>
+    <section class="cards" id="cards">
+      <div class="card">
+        <div class="label">Leases</div>
+        <div class="value" id="lease-count">0</div>
+        <div class="sub">DHCP allocations currently tracked</div>
+      </div>
+      <div class="card">
+        <div class="label">DNS records</div>
+        <div class="value" id="dns-count">0</div>
+        <div class="sub">Local names and dynamic host records</div>
+      </div>
+      <div class="card">
+        <div class="label">Lease focus</div>
+        <div class="value" id="lease-active">0</div>
+        <div class="sub">Matching rows in the current filter</div>
+      </div>
+      <div class="card">
+        <div class="label">DNS focus</div>
+        <div class="value" id="dns-active">0</div>
+        <div class="sub">Matching rows in the current filter</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Leases</h2>
+          <div class="meta">Search by host, MAC address, IP, interface, or expiry time.</div>
+        </div>
+        <div class="filters">
+          <input id="lease-filter" type="search" placeholder="Filter leases">
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Hostname</th>
+              <th>Hardware Addr</th>
+              <th>Address</th>
+              <th>Interface</th>
+              <th>Lease Until</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody id="lease-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>DNS records</h2>
+          <div class="meta">Search by name, address, or CNAME target.</div>
+        </div>
+        <div class="filters">
+          <input id="dns-filter" type="search" placeholder="Filter DNS records">
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Type</th>
+              <th>Address</th>
+              <th>CNAME</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody id="dns-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

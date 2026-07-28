@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
+	"net"
 	"net/netip"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ const (
 	defaultEthersFile = "/etc/ethers"
 	defaultDNSServer  = "udp"
 	defaultDNSPort    = 53
+	defaultWebAddr    = "127.0.0.1:80"
 	defaultLogLevel   = "info"
 	defaultLogFormat  = "text"
 	defaultMainLease  = 6 * time.Hour
@@ -82,6 +84,10 @@ type DNSConfig struct {
 	Blocked            []string
 }
 
+type WebConfig struct {
+	Addr string
+}
+
 type VPNConfig struct {
 	Assign *netip.Prefix
 }
@@ -107,6 +113,7 @@ type Config struct {
 	Logging LoggingConfig
 	DHCP    DHCPConfig
 	DNS     DNSConfig
+	Web     WebConfig
 	VPN     VPNConfig
 	Glue    []GlueConfig
 	Hosts   []HostRecord
@@ -132,6 +139,9 @@ func defaultConfig() Config {
 			Port:               defaultDNSPort,
 			Network:            defaultDNSServer,
 			RecursiveUpstreams: map[string]netip.Addr{},
+		},
+		Web: WebConfig{
+			Addr: defaultWebAddr,
 		},
 	}
 }
@@ -198,6 +208,10 @@ func parseStatements(path string, cfg *Config, stmts []conffile.Statement) error
 				return directiveError(path, "dns", "expected block")
 			}
 			if err := parseDNSBlock(path, &cfg.DNS, stmt.Block.Statements); err != nil {
+				return err
+			}
+		case "web":
+			if err := parseWeb(path, &cfg.Web, stmt); err != nil {
 				return err
 			}
 		case "vpn":
@@ -500,6 +514,31 @@ func parseDNSBlock(path string, cfg *DNSConfig, stmts []conffile.Statement) erro
 	return nil
 }
 
+func parseWeb(path string, cfg *WebConfig, stmt conffile.Statement) error {
+	if stmt.Block != nil {
+		for _, nested := range stmt.Block.Statements {
+			switch nested.Key {
+			case "addr", "address", "listen":
+				value, err := requireSingleValue(path, nested)
+				if err != nil {
+					return err
+				}
+				cfg.Addr = value
+			default:
+				return directiveError(path, nested.Key, "unsupported web directive")
+			}
+		}
+		return nil
+	}
+
+	value, err := requireSingleValue(path, stmt)
+	if err != nil {
+		return err
+	}
+	cfg.Addr = value
+	return nil
+}
+
 func parseVPNBlock(path string, cfg *VPNConfig, stmts []conffile.Statement) error {
 	for _, stmt := range stmts {
 		switch stmt.Key {
@@ -582,6 +621,12 @@ func (c *Config) Validate() error {
 		}
 	}
 	if err := validateLogging(c.Logging); err != nil {
+		errs = append(errs, err)
+	}
+	if strings.TrimSpace(c.Web.Addr) == "" {
+		c.Web.Addr = defaultWebAddr
+	}
+	if err := validateWeb(c.Web); err != nil {
 		errs = append(errs, err)
 	}
 	if c.DHCP.hasConfig() && !c.DHCP.Main.IsConfigured() {
@@ -679,6 +724,23 @@ func validateLogging(cfg LoggingConfig) error {
 	default:
 		return fmt.Errorf("log format %q is not supported", cfg.Format)
 	}
+}
+
+func validateWeb(cfg WebConfig) error {
+	if strings.TrimSpace(cfg.Addr) == "" {
+		return errors.New("web addr is required")
+	}
+	host, port, err := net.SplitHostPort(cfg.Addr)
+	if err != nil {
+		return fmt.Errorf("web addr %q is invalid: %w", cfg.Addr, err)
+	}
+	if port == "" {
+		return fmt.Errorf("web addr %q is invalid: missing port", cfg.Addr)
+	}
+	if host == "" && !strings.HasPrefix(cfg.Addr, ":") {
+		return fmt.Errorf("web addr %q is invalid", cfg.Addr)
+	}
+	return nil
 }
 
 func validatePrefix(name string, prefix netip.Prefix) error {
