@@ -6,9 +6,15 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/nettle .
+ARG TARGETOS
+ARG TARGETARCH
+RUN set -eu; \
+    goos="${TARGETOS:-linux}"; \
+    if [ -n "${TARGETARCH:-}" ]; then \
+      CGO_ENABLED=0 GOOS="$goos" GOARCH="$TARGETARCH" go build -trimpath -ldflags="-s -w" -o /out/nettle .; \
+    else \
+      CGO_ENABLED=0 GOOS="$goos" go build -trimpath -ldflags="-s -w" -o /out/nettle .; \
+    fi
 
 FROM debian:bookworm-slim AS runtime
 
