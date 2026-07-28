@@ -54,6 +54,8 @@ type leasePool struct {
 
 	staticByMAC  map[string]staticAssignment
 	staticIPs    map[string]struct{}
+
+	tld string
 }
 
 type staticAssignment struct {
@@ -181,13 +183,13 @@ func (s *DHCPService) Stop(ctx context.Context) error {
 
 func (s *DHCPService) buildPools() ([]*leasePool, error) {
 	var pools []*leasePool
-	if pool, err := newLeasePool("main", s.cfg.DHCP.Main, s.cfg.DHCP.Gateway, s.cfg.DHCP.DNS, s.cfg.DHCP.NTP, s.cfg.StaticHosts, s.bus); err != nil {
+	if pool, err := newLeasePool("main", s.cfg.DHCP.Main, s.cfg.DHCP.Gateway, s.cfg.DHCP.DNS, s.cfg.DHCP.NTP, s.cfg.StaticHosts, s.cfg.Global.TLD, s.bus); err != nil {
 		return nil, err
 	} else if pool != nil {
 		pools = append(pools, pool)
 	}
 	if s.cfg.DHCP.Guest != nil {
-		if pool, err := newLeasePool("guest", *s.cfg.DHCP.Guest, s.cfg.DHCP.Gateway, s.cfg.DHCP.DNS, s.cfg.DHCP.NTP, s.cfg.StaticHosts, s.bus); err != nil {
+		if pool, err := newLeasePool("guest", *s.cfg.DHCP.Guest, s.cfg.DHCP.Gateway, s.cfg.DHCP.DNS, s.cfg.DHCP.NTP, s.cfg.StaticHosts, s.cfg.Global.TLD, s.bus); err != nil {
 			return nil, err
 		} else if pool != nil {
 			pools = append(pools, pool)
@@ -196,7 +198,7 @@ func (s *DHCPService) buildPools() ([]*leasePool, error) {
 	return pools, nil
 }
 
-func newLeasePool(name string, assign config.Assignment, gateway *netip.Addr, dnsServers []netip.Addr, ntp *netip.Addr, statics []config.StaticHost, b bus.Bus) (*leasePool, error) {
+func newLeasePool(name string, assign config.Assignment, gateway *netip.Addr, dnsServers []netip.Addr, ntp *netip.Addr, statics []config.StaticHost, tld string, b bus.Bus) (*leasePool, error) {
 	if !assign.IsConfigured() {
 		return nil, nil
 	}
@@ -230,6 +232,8 @@ func newLeasePool(name string, assign config.Assignment, gateway *netip.Addr, dn
 
 		staticByMAC: map[string]staticAssignment{},
 		staticIPs:   map[string]struct{}{},
+
+		tld: tld,
 	}
 
 	for _, sh := range statics {
@@ -333,10 +337,11 @@ func (p *leasePool) handler(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4
 	}
 
 	hostname := strings.TrimSpace(m.HostName())
+	dnsName := domain.EnsureTLD(hostname, p.tld)
 	if hostname != "" && p.bus != nil {
 		_ = p.bus.Publish(context.Background(), domain.DNSRecordUpserted{
 			Record: domain.DNSRecord{
-				Name: hostname,
+				Name: dnsName,
 				Addr: addrPtr(ip),
 			},
 		})

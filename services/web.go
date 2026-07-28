@@ -41,6 +41,7 @@ type webStore struct {
 	dnsRecords  map[string]dnsRecordView
 	staticHosts []staticHostView
 	updatedAt   time.Time
+	tld         string
 }
 
 type webFeed struct {
@@ -100,7 +101,7 @@ func NewWeb(cfg *config.Config, b bus.Bus, logger *slog.Logger) *WebService {
 		cfg:   cfg,
 		bus:   b,
 		log:   logger.With("component", "web"),
-		store: newWebStore(cfg),
+		store: newWebStore(cfg, cfg.Global.TLD),
 		feed:  newWebFeed(),
 	}
 }
@@ -306,7 +307,7 @@ func (s *WebService) consumeEvents(events <-chan bus.Event) {
 				if hostname := strings.TrimSpace(ev.Lease.Hostname); hostname != "" {
 					addr := ev.Lease.Address
 					dnsView := s.store.upsertDNS(domain.DNSRecord{
-						Name: hostname,
+						Name: domain.EnsureTLD(hostname, s.store.tld),
 						Addr: &addr,
 					})
 					if dnsView.Name != "" {
@@ -318,15 +319,16 @@ func (s *WebService) consumeEvents(events <-chan bus.Event) {
 	}
 }
 
-func newWebStore(cfg *config.Config) *webStore {
+func newWebStore(cfg *config.Config, tld string) *webStore {
 	store := &webStore{
 		leases:      map[string]leaseView{},
 		dnsRecords:  map[string]dnsRecordView{},
 		staticHosts: []staticHostView{},
+		tld:         tld,
 	}
 	for _, sh := range cfg.StaticHosts {
 		store.staticHosts = append(store.staticHosts, staticHostView{
-			Hostname:     strings.TrimSpace(sh.Hostname),
+			Hostname:     domain.EnsureTLD(strings.TrimSpace(sh.Hostname), tld),
 			HardwareAddr: strings.TrimSpace(sh.HardwareAddr),
 			Address:      sh.Address.String(),
 		})
@@ -338,7 +340,7 @@ func newWebStore(cfg *config.Config) *webStore {
 			CNAME: host.CNAME,
 		}
 		for _, name := range host.Names {
-			record.Name = name
+			record.Name = domain.EnsureTLD(name, tld)
 			store.upsertDNS(record)
 		}
 	}
@@ -405,7 +407,7 @@ func (s *webStore) upsertLease(lease domain.Lease) leaseView {
 
 func (s *webStore) upsertStaticHost(staticHost domain.StaticHost) staticHostView {
 	view := staticHostView{
-		Hostname:     strings.TrimSpace(staticHost.Hostname),
+		Hostname:     domain.EnsureTLD(strings.TrimSpace(staticHost.Hostname), s.tld),
 		HardwareAddr: strings.TrimSpace(staticHost.HardwareAddr),
 		Address:      staticHost.Address.String(),
 	}

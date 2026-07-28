@@ -62,7 +62,7 @@ func newDNSRecordStore(hosts []config.HostRecord, tld string) *dnsRecordStore {
 			CNAME: host.CNAME,
 		}
 		for _, name := range host.Names {
-			store.put(ensureTLD(name, tld), record)
+			store.put(domain.EnsureTLD(name, tld), record)
 		}
 	}
 	return store
@@ -77,13 +77,6 @@ func firstName(names []string) string {
 
 func canonicalDNSName(name string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
-}
-
-func ensureTLD(name string, tld string) string {
-	if !strings.Contains(name, ".") {
-		return name + "." + tld
-	}
-	return name
 }
 
 func (s *dnsRecordStore) put(name string, record domain.DNSRecord) {

@@ -2,6 +2,7 @@ package domain
 
 import (
 	"net/netip"
+	"strings"
 	"time"
 )
 
@@ -55,4 +56,14 @@ type StaticHost struct {
 
 type StaticHostUpserted struct {
 	StaticHost StaticHost
+}
+
+func EnsureTLD(name, tld string) string {
+	if tld == "" {
+		return name
+	}
+	if !strings.Contains(name, ".") {
+		return name + "." + tld
+	}
+	return name
 }
