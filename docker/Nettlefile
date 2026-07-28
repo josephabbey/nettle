@@ -1,0 +1,12 @@
+{
+  tld docker
+
+  dns {
+    port 1053
+    net udp
+  }
+}
+
+localhost {
+  ip 127.0.0.1
+}

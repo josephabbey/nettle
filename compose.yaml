@@ -1,0 +1,12 @@
+services:
+  nettle:
+    build:
+      context: .
+    image: ghcr.io/josephabbey/nettle:local
+    restart: unless-stopped
+    environment:
+      NETTLE_CONFIG: /config/Nettlefile
+    volumes:
+      - ./docker/Nettlefile:/config/Nettlefile:ro
+    ports:
+      - "1053:1053/udp"

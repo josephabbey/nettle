@@ -1,0 +1,60 @@
+{
+  tld ruins
+  hosts /etc/hosts
+  ethers /etc/ethers
+
+  dhcp {
+    ntp 192.168.0.43
+    gateway 192.168.0.1
+    # dns 0.0.0.0 208.67.222.123 208.67.220.123 (this won't work with block, default is just 0.0.0.0)
+
+    guest {
+      lease 1h
+      assign range 192.168.2.0/24
+
+      intf wlan1
+    }
+
+    lease 6h
+    # assign 192.168.0.0/24
+    assign range 192.168.0.2 192.168.0.255
+
+    intf eth0
+  }
+
+  dns {
+    net udp
+
+    # when connect is used, the connected nettle DNS will be upstreamed automatically
+    # upstream spires 192.168.1.10
+
+    # block DNS lookups to certain domains, or using known lists
+    # block {
+    #   adguard
+    # }
+
+    upstream 208.67.222.123
+    upstream 208.67.220.123
+  }
+
+  vpn {
+    assign 192.168.128.0/24
+  }
+
+  glue example.com {
+    connect remote.com {
+      # nodns
+    }
+  }
+}
+
+# If the first name is a single word, it will be the device name
+# (match to ethers), this eliminates the need for hosts, beyond
+# migration.
+pi, *.pi.local {
+  ip 192.168.0.45
+}
+
+ca.local {
+  cname pi.local
+}

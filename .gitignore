@@ -1,0 +1,19 @@
+.DS_Store
+.idea/
+.vscode/
+
+# Go build outputs
+/nettle
+*.exe
+*.test
+*.out
+coverage.out
+
+# Local environment and logs
+.env
+.env.*
+*.log
+
+# Editor and tool caches
+*.swp
+*.swo
