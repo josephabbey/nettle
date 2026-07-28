@@ -43,10 +43,11 @@ type AddressRange struct {
 }
 
 type Assignment struct {
-	Prefix    *netip.Prefix
-	Range     *AddressRange
-	Interface string
-	Lease     time.Duration
+	Prefix     *netip.Prefix
+	Range      *AddressRange
+	Interface  string
+	Lease      time.Duration
+	LeasesFile string
 }
 
 func (a Assignment) Bounds() (netip.Addr, netip.Addr, bool) {
@@ -358,6 +359,12 @@ func parseDHCPBlock(path string, cfg *DHCPConfig, stmts []conffile.Statement) er
 				return err
 			}
 			cfg.Main.Interface = value
+		case "record":
+			value, err := requireSingleValue(path, stmt)
+			if err != nil {
+				return err
+			}
+			cfg.Main.LeasesFile = value
 		case "guest":
 			if stmt.Block == nil {
 				return directiveError(path, "guest", "expected block")
@@ -403,6 +410,12 @@ func parseAssignmentBlock(path string, cfg *Assignment, stmts []conffile.Stateme
 				return err
 			}
 			cfg.Interface = value
+		case "record":
+			value, err := requireSingleValue(path, stmt)
+			if err != nil {
+				return err
+			}
+			cfg.LeasesFile = value
 		default:
 			return directiveError(path, stmt.Key, "unsupported guest directive")
 		}

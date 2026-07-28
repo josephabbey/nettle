@@ -2,11 +2,14 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -48,14 +51,15 @@ type leasePool struct {
 	dnsServers []netip.Addr
 	ntp        *netip.Addr
 
-	leasesMu sync.Mutex
+	leasesMu sync.RWMutex
 	routesMu sync.RWMutex
 	routes   []domain.Route
 
 	staticByMAC  map[string]staticAssignment
 	staticIPs    map[string]struct{}
 
-	tld string
+	tld        string
+	leasesFile string
 }
 
 type staticAssignment struct {
@@ -233,7 +237,14 @@ func newLeasePool(name string, assign config.Assignment, gateway *netip.Addr, dn
 		staticByMAC: map[string]staticAssignment{},
 		staticIPs:   map[string]struct{}{},
 
-		tld: tld,
+		tld:        tld,
+		leasesFile: assign.LeasesFile,
+	}
+
+	if pool.leasesFile != "" {
+		if err := pool.loadLeases(); err != nil {
+			pool.log.Warn("failed to load persisted leases", "path", pool.leasesFile, "error", err)
+		}
 	}
 
 	for _, sh := range statics {
@@ -322,6 +333,7 @@ func (p *leasePool) handler(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4
 		}
 		delete(p.leases, key)
 		p.leasesMu.Unlock()
+		p.saveLeases()
 		p.log.Info("dhcp release", "mac", key)
 		return
 	}
@@ -424,21 +436,28 @@ func (p *leasePool) allocate(req *dhcpv4.DHCPv4) (netip.Addr, error) {
 			Hostname:  sa.Hostname,
 		}
 		p.leasesMu.Unlock()
+		p.saveLeases()
 		return sa.Address, nil
 	}
 
-	if lease, ok := p.leases[key]; ok && now.Before(lease.ExpiresAt) {
+	p.leasesMu.RLock()
+	lease, ok := p.leases[key]
+	p.leasesMu.RUnlock()
+	if ok && now.Before(lease.ExpiresAt) {
 		return lease.Address, nil
 	}
 
 	for candidate := p.next; candidate.IsValid() && candidate.Compare(p.end) <= 0; candidate = candidate.Next() {
 		if !p.taken(candidate, now) && !p.isStatic(candidate) {
+			p.leasesMu.Lock()
 			p.leases[key] = leaseState{
 				Address:   candidate,
 				ExpiresAt: now.Add(p.assign.Lease),
 				Hostname:  req.HostName(),
 			}
+			p.leasesMu.Unlock()
 			p.next = candidate.Next()
+			p.saveLeases()
 			return candidate, nil
 		}
 	}
@@ -455,6 +474,8 @@ func (p *leasePool) isStatic(addr netip.Addr) bool {
 }
 
 func (p *leasePool) taken(addr netip.Addr, now time.Time) bool {
+	p.leasesMu.RLock()
+	defer p.leasesMu.RUnlock()
 	for _, lease := range p.leases {
 		if lease.Address == addr && now.Before(lease.ExpiresAt) {
 			return true
@@ -511,13 +532,119 @@ func (p *leasePool) toDHCPRoutes() []*dhcpv4.Route {
 	return dhcpRoutes
 }
 
-func (p *leasePool) expireLeases() {
+type persistLease struct {
+	Address   string `json:"address"`
+	ExpiresAt string `json:"expiresAt"`
+	Hostname  string `json:"hostname"`
+}
+
+type persistData struct {
+	Version int                     `json:"version"`
+	Leases  map[string]persistLease `json:"leases"`
+}
+
+func (p *leasePool) loadLeases() error {
+	data, err := os.ReadFile(p.leasesFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	var pd persistData
+	if err := json.Unmarshal(data, &pd); err != nil {
+		return err
+	}
+	if pd.Version != 1 {
+		return nil
+	}
+
 	now := time.Now()
 	p.leasesMu.Lock()
 	defer p.leasesMu.Unlock()
+
+	for key, pl := range pd.Leases {
+		addr, err := netip.ParseAddr(pl.Address)
+		if err != nil {
+			p.log.Warn("skipping persisted lease with invalid address", "key", key, "address", pl.Address)
+			continue
+		}
+		expiresAt, err := time.Parse(time.RFC3339, pl.ExpiresAt)
+		if err != nil {
+			p.log.Warn("skipping persisted lease with invalid expiry", "key", key)
+			continue
+		}
+		if now.After(expiresAt) {
+			continue
+		}
+		p.leases[key] = leaseState{
+			Address:   addr,
+			ExpiresAt: expiresAt,
+			Hostname:  pl.Hostname,
+		}
+	}
+
+	p.log.Info("loaded persisted leases", "count", len(p.leases), "path", p.leasesFile)
+	return nil
+}
+
+func (p *leasePool) saveLeases() {
+	if p.leasesFile == "" {
+		return
+	}
+
+	p.leasesMu.Lock()
+	leases := make(map[string]persistLease, len(p.leases))
+	for key, ls := range p.leases {
+		leases[key] = persistLease{
+			Address:   ls.Address.String(),
+			ExpiresAt: ls.ExpiresAt.Format(time.RFC3339),
+			Hostname:  ls.Hostname,
+		}
+	}
+	p.leasesMu.Unlock()
+
+	pd := persistData{
+		Version: 1,
+		Leases:  leases,
+	}
+
+	data, err := json.Marshal(pd)
+	if err != nil {
+		p.log.Warn("failed to marshal leases", "error", err)
+		return
+	}
+
+	dir := filepath.Dir(p.leasesFile)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		p.log.Warn("failed to create leases directory", "path", dir, "error", err)
+		return
+	}
+
+	tmp := p.leasesFile + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		p.log.Warn("failed to write leases temp file", "path", tmp, "error", err)
+		return
+	}
+	if err := os.Rename(tmp, p.leasesFile); err != nil {
+		p.log.Warn("failed to rename leases file", "src", tmp, "dst", p.leasesFile, "error", err)
+		return
+	}
+}
+
+func (p *leasePool) expireLeases() {
+	now := time.Now()
+	p.leasesMu.Lock()
+	changed := false
 	for key, lease := range p.leases {
 		if now.After(lease.ExpiresAt) {
 			delete(p.leases, key)
+			changed = true
 		}
+	}
+	p.leasesMu.Unlock()
+	if changed {
+		p.saveLeases()
 	}
 }
