@@ -49,11 +49,11 @@ func NewDNS(cfg *config.Config, b bus.Bus, logger *slog.Logger) *DNSService {
 		cfg:   cfg,
 		bus:   b,
 		log:   logger.With("component", "dns"),
-		store: newDNSRecordStore(cfg.Hosts),
+		store: newDNSRecordStore(cfg.Hosts, cfg.Global.TLD),
 	}
 }
 
-func newDNSRecordStore(hosts []config.HostRecord) *dnsRecordStore {
+func newDNSRecordStore(hosts []config.HostRecord, tld string) *dnsRecordStore {
 	store := &dnsRecordStore{exact: map[string]domain.DNSRecord{}}
 	for _, host := range hosts {
 		record := domain.DNSRecord{
@@ -62,7 +62,7 @@ func newDNSRecordStore(hosts []config.HostRecord) *dnsRecordStore {
 			CNAME: host.CNAME,
 		}
 		for _, name := range host.Names {
-			store.put(name, record)
+			store.put(ensureTLD(name, tld), record)
 		}
 	}
 	return store
@@ -77,6 +77,13 @@ func firstName(names []string) string {
 
 func canonicalDNSName(name string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
+}
+
+func ensureTLD(name string, tld string) string {
+	if !strings.Contains(name, ".") {
+		return name + "." + tld
+	}
+	return name
 }
 
 func (s *dnsRecordStore) put(name string, record domain.DNSRecord) {

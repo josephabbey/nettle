@@ -104,9 +104,6 @@ func (s *WebService) Start(ctx context.Context) error {
 	}
 
 	addr := strings.TrimSpace(s.cfg.Web.Addr)
-	if addr == "" {
-		addr = "127.0.0.1:8080"
-	}
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {

@@ -518,29 +518,12 @@ func parseWeb(path string, cfg *WebConfig, stmt conffile.Statement) error {
 	if stmt.Block != nil {
 		for _, nested := range stmt.Block.Statements {
 			switch nested.Key {
-			case "addr", "address", "listen":
+			case "listen":
 				value, err := requireSingleValue(path, nested)
 				if err != nil {
 					return err
 				}
 				cfg.Addr = value
-			case "port":
-				value, err := requireSingleValue(path, nested)
-				if err != nil {
-					return err
-				}
-				port, err := parsePort(value)
-				if err != nil {
-					return fmt.Errorf("%s: web port: %w", path, err)
-				}
-				host, _, err := net.SplitHostPort(cfg.Addr)
-				if err != nil {
-					host = cfg.Addr
-				}
-				if host == "" {
-					host = "127.0.0.1"
-				}
-				cfg.Addr = net.JoinHostPort(host, fmt.Sprintf("%d", port))
 			default:
 				return directiveError(path, nested.Key, "unsupported web directive")
 			}
