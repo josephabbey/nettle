@@ -91,6 +91,10 @@ func (s *dnsRecordStore) put(name string, record domain.DNSRecord) {
 		return
 	}
 	s.exact[canonical] = record
+	s.wildcards = append(s.wildcards, wildcardRecord{
+		suffix: canonical,
+		record: record,
+	})
 }
 
 func (s *dnsRecordStore) upsert(record domain.DNSRecord) {
