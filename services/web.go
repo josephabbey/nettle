@@ -56,11 +56,11 @@ type webEvent struct {
 }
 
 type webState struct {
-	GeneratedAt time.Time         `json:"generatedAt"`
-	Counts      webCounts         `json:"counts"`
-	Leases      []leaseView       `json:"leases"`
-	DNSRecords  []dnsRecordView   `json:"dnsRecords"`
-	StaticHosts []staticHostView  `json:"staticHosts"`
+	GeneratedAt time.Time        `json:"generatedAt"`
+	Counts      webCounts        `json:"counts"`
+	Leases      []leaseView      `json:"leases"`
+	DNSRecords  []dnsRecordView  `json:"dnsRecords"`
+	StaticHosts []staticHostView `json:"staticHosts"`
 }
 
 type webCounts struct {

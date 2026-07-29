@@ -55,8 +55,8 @@ type leasePool struct {
 	routesMu sync.RWMutex
 	routes   []domain.Route
 
-	staticByMAC  map[string]staticAssignment
-	staticIPs    map[string]struct{}
+	staticByMAC map[string]staticAssignment
+	staticIPs   map[string]struct{}
 
 	tld        string
 	leasesFile string
