@@ -8,11 +8,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
+	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/josephabbey/nettle/bus"
 	"github.com/josephabbey/nettle/config"
 	"github.com/josephabbey/nettle/domain"
@@ -31,8 +34,10 @@ type WebService struct {
 	listener    net.Listener
 	unsubscribe func()
 
-	store *webStore
-	feed  *webFeed
+	store   *webStore
+	feed    *webFeed
+	vpn     *VPNService
+	connect *ConnectService
 }
 
 type webStore struct {
@@ -91,6 +96,14 @@ type dnsRecordView struct {
 	CNAME     string    `json:"cname"`
 	Type      string    `json:"type"`
 	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+func (s *WebService) SetVPN(vpn *VPNService) {
+	s.vpn = vpn
+}
+
+func (s *WebService) SetConnect(connect *ConnectService) {
+	s.connect = connect
 }
 
 func NewWeb(cfg *config.Config, b bus.Bus, logger *slog.Logger) *WebService {
@@ -197,66 +210,112 @@ func (s *WebService) Addr() string {
 }
 
 func (s *WebService) routes() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.serveIndex)
-	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(webAssetFS))))
-	mux.HandleFunc("/healthz", s.serveHealth)
-	mux.HandleFunc("/api/state", s.serveState)
-	mux.HandleFunc("/api/leases", s.serveLeases)
-	mux.HandleFunc("/api/dns-records", s.serveDNSRecords)
-	mux.HandleFunc("/api/static-hosts", s.serveStaticHosts)
-	mux.HandleFunc("/events", s.serveEvents)
-	return mux
-}
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(gin.Recovery())
 
-func (s *WebService) serveIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
+	r.GET("/", s.serveIndex)
+	r.GET("/assets/*filepath", gin.WrapH(http.StripPrefix("/assets/", http.FileServer(http.FS(webAssetFS)))))
+	r.GET("/healthz", s.serveHealth)
+	r.GET("/api/state", s.serveState)
+	r.GET("/api/leases", s.serveLeases)
+	r.GET("/api/dns-records", s.serveDNSRecords)
+	r.GET("/api/static-hosts", s.serveStaticHosts)
+	r.GET("/events", s.serveEvents)
+	r.GET("/api/network", s.serveNetwork)
+	r.GET("/api/user", s.serveUser)
+	if s.vpn != nil {
+		r.GET("/api/vpn/peers", s.serveVPNPeers)
+		r.DELETE("/api/vpn/peers", s.serveVPNPeers)
+		r.POST("/api/vpn/generate", s.serveVPNGenerate)
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(webIndexHTML)
+	if s.connect != nil {
+		r.GET("/api/connect/tunnels", s.serveConnectTunnels)
+		r.POST("/api/connect/pair", s.serveConnectPair)
+	}
+
+	if s.cfg.Web.OIDC != nil {
+		r.Use(s.oidcMiddleware())
+	}
+
+	return r
 }
 
-func (s *WebService) serveHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+func (s *WebService) oidcMiddleware() gin.HandlerFunc {
+	headerName := s.cfg.Web.OIDC.UserHeader
+	return func(c *gin.Context) {
+		if s.isPublicPath(c.Request.URL.Path) {
+			c.Next()
+			return
+		}
+		user := strings.TrimSpace(c.GetHeader(headerName))
+		if user == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized", "message": "authenticate through the reverse proxy"})
+			c.Abort()
+			return
+		}
+		c.Set("user", user)
+		c.Next()
+	}
 }
 
-func (s *WebService) serveState(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.store.snapshot())
+func (s *WebService) isPublicPath(path string) bool {
+	return path == "/healthz"
 }
 
-func (s *WebService) serveLeases(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.store.snapshot().Leases)
+func (s *WebService) serveIndex(c *gin.Context) {
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.Header("Cache-Control", "no-store")
+	c.Writer.Write(webIndexHTML)
 }
 
-func (s *WebService) serveDNSRecords(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.store.snapshot().DNSRecords)
+func (s *WebService) serveUser(c *gin.Context) {
+	user, _ := c.Get("user")
+	userStr, _ := user.(string)
+	c.JSON(http.StatusOK, gin.H{
+		"authenticated": userStr != "",
+		"user":          userStr,
+		"oidc":          s.cfg.Web.OIDC != nil,
+	})
 }
 
-func (s *WebService) serveStaticHosts(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.store.snapshot().StaticHosts)
+func (s *WebService) serveHealth(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-func (s *WebService) serveEvents(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
+func (s *WebService) serveState(c *gin.Context) {
+	c.JSON(http.StatusOK, s.store.snapshot())
+}
+
+func (s *WebService) serveLeases(c *gin.Context) {
+	c.JSON(http.StatusOK, s.store.snapshot().Leases)
+}
+
+func (s *WebService) serveDNSRecords(c *gin.Context) {
+	c.JSON(http.StatusOK, s.store.snapshot().DNSRecords)
+}
+
+func (s *WebService) serveStaticHosts(c *gin.Context) {
+	c.JSON(http.StatusOK, s.store.snapshot().StaticHosts)
+}
+
+func (s *WebService) serveEvents(c *gin.Context) {
+	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming unsupported"})
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
 
 	events, unsubscribe := s.feed.subscribe()
 	defer unsubscribe()
 
-	if err := writeSSE(w, "snapshot", s.store.snapshot()); err != nil {
-		return
-	}
+	data, _ := json.Marshal(s.store.snapshot())
+	fmt.Fprintf(c.Writer, "event: snapshot\ndata: %s\n\n", data)
 	flusher.Flush()
 
 	keepAlive := time.NewTicker(25 * time.Second)
@@ -264,20 +323,17 @@ func (s *WebService) serveEvents(w http.ResponseWriter, r *http.Request) {
 
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-c.Request.Context().Done():
 			return
 		case <-keepAlive.C:
-			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
-				return
-			}
+			fmt.Fprint(c.Writer, ": ping\n\n")
 			flusher.Flush()
 		case event, ok := <-events:
 			if !ok {
 				return
 			}
-			if err := writeSSE(w, event.Type, event.Data); err != nil {
-				return
-			}
+			data, _ := json.Marshal(event.Data)
+			fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event.Type, data)
 			flusher.Flush()
 		}
 	}
@@ -344,7 +400,60 @@ func newWebStore(cfg *config.Config, tld string) *webStore {
 			store.upsertDNS(record)
 		}
 	}
+	store.loadPersistedLeases(cfg.DHCP.Main.LeasesFile, cfg.DHCP.Main.Interface, tld)
+	if cfg.DHCP.Guest != nil {
+		store.loadPersistedLeases(cfg.DHCP.Guest.LeasesFile, cfg.DHCP.Guest.Interface, tld)
+	}
 	return store
+}
+
+func (s *webStore) loadPersistedLeases(leasesFile, iface, tld string) {
+	if leasesFile == "" {
+		return
+	}
+	data, err := os.ReadFile(leasesFile)
+	if err != nil {
+		return
+	}
+	var pd persistData
+	if err := json.Unmarshal(data, &pd); err != nil {
+		return
+	}
+	if pd.Version != 1 {
+		return
+	}
+	now := time.Now()
+	for key, pl := range pd.Leases {
+		addr, err := netip.ParseAddr(pl.Address)
+		if err != nil {
+			continue
+		}
+		expiresAt, err := time.Parse(time.RFC3339, pl.ExpiresAt)
+		if err != nil {
+			continue
+		}
+		if now.After(expiresAt) {
+			continue
+		}
+		s.leases["hw:"+key] = leaseView{
+			Key:          "hw:" + key,
+			Hostname:     strings.TrimSpace(pl.Hostname),
+			HardwareAddr: key,
+			Address:      addr.String(),
+			Interface:    iface,
+			LeaseUntil:   expiresAt.UTC(),
+			UpdatedAt:    now.UTC(),
+		}
+		if hostname := strings.TrimSpace(pl.Hostname); hostname != "" {
+			dnsName := domain.EnsureTLD(hostname, tld)
+			s.dnsRecords[dnsName] = dnsRecordView{
+				Name:      canonicalDNSName(dnsName),
+				Address:   addr.String(),
+				Type:      "A",
+				UpdatedAt: now.UTC(),
+			}
+		}
+	}
 }
 
 func (s *webStore) snapshot() webState {
@@ -503,6 +612,173 @@ func (f *webFeed) publish(event webEvent) {
 	}
 }
 
+func (s *WebService) serveNetwork(c *gin.Context) {
+	state := s.store.snapshot()
+
+	var vpnPeers []domain.Peer
+	if s.vpn != nil {
+		vpnPeers = s.vpn.ListPeers()
+	}
+	if vpnPeers == nil {
+		vpnPeers = []domain.Peer{}
+	}
+
+	var connectTunnels []domain.Peer
+	if s.connect != nil {
+		connectTunnels = s.connect.ListTunnels()
+	}
+	if connectTunnels == nil {
+		connectTunnels = []domain.Peer{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"leases":  state.Leases,
+		"vpn":     vpnPeers,
+		"connect": connectTunnels,
+		"dns":     state.DNSRecords,
+	})
+}
+
+func (s *WebService) serveConnectTunnels(c *gin.Context) {
+	if s.connect == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "connect not configured"})
+		return
+	}
+	peers := s.connect.ListTunnels()
+	if peers == nil {
+		peers = []domain.Peer{}
+	}
+	info := []map[string]any{}
+	for _, addr := range s.cfg.Glue {
+		connInfo := s.connect.ConnectionInfo(addr.Address)
+		if connInfo != nil {
+			info = append(info, connInfo)
+		}
+	}
+	tunnelsJSON, err := s.connect.TunnelsJSON()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	var tunnels []any
+	_ = json.Unmarshal(tunnelsJSON, &tunnels)
+
+	c.JSON(http.StatusOK, gin.H{
+		"glue":    info,
+		"tunnels": tunnels,
+		"peers":   peers,
+	})
+}
+
+func (s *WebService) serveConnectPair(c *gin.Context) {
+	if s.connect == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "connect not configured"})
+		return
+	}
+
+	var req struct {
+		Target       string `json:"target"`
+		PublicKey    string `json:"publicKey"`
+		Endpoint     string `json:"endpoint"`
+		RemotePrefix string `json:"remotePrefix"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	if req.Target == "" || req.PublicKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "target and publicKey required"})
+		return
+	}
+
+	prefix, err := netip.ParsePrefix(req.RemotePrefix)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid remotePrefix"})
+		return
+	}
+
+	endpoint := req.Endpoint
+	if endpoint == "" {
+		endpoint = req.Target
+	}
+
+	if err := s.connect.SetRemotePeer(req.Target, req.PublicKey, endpoint, prefix); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "paired"})
+}
+
+func (s *WebService) serveVPNPeers(c *gin.Context) {
+	if s.vpn == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "vpn not configured"})
+		return
+	}
+	switch c.Request.Method {
+	case http.MethodGet:
+		peers := s.vpn.ListPeers()
+		if peers == nil {
+			peers = []domain.Peer{}
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"serverPubKey": s.vpn.ServerPublicKey(),
+			"peers":        peers,
+		})
+	case http.MethodDelete:
+		var req struct {
+			PublicKey string `json:"publicKey"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+			return
+		}
+		if err := s.vpn.RemovePeer(req.PublicKey); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "removed"})
+	default:
+		c.JSON(http.StatusMethodNotAllowed, gin.H{"error": "method not allowed"})
+	}
+}
+
+func (s *WebService) serveVPNGenerate(c *gin.Context) {
+	if s.vpn == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "vpn not configured"})
+		return
+	}
+
+	var req struct {
+		Name     string `json:"name"`
+		Endpoint string `json:"endpoint"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	if req.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+	if req.Endpoint == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "endpoint is required"})
+		return
+	}
+
+	cfg, privKey, err := s.vpn.GenerateClientConfig(req.Name, req.Endpoint)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"config":     cfg,
+		"name":       req.Name,
+		"privateKey": privKey,
+	})
+}
+
 func leaseKey(lease domain.Lease) string {
 	if key := strings.TrimSpace(lease.HardwareAddr); key != "" {
 		return "hw:" + key
@@ -514,27 +790,4 @@ func leaseKey(lease domain.Lease) string {
 		return "ip:" + lease.Address.String()
 	}
 	return fmt.Sprintf("lease:%s", time.Now().UTC().Format(time.RFC3339Nano))
-}
-
-func writeJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(true)
-	_ = enc.Encode(payload)
-}
-
-func writeSSE(w http.ResponseWriter, event string, payload any) error {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(w, "event: %s\n", event); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
-		return err
-	}
-	return nil
 }

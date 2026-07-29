@@ -85,8 +85,13 @@ type DNSConfig struct {
 	Blocked            []string
 }
 
+type OIDCConfig struct {
+	UserHeader string
+}
+
 type WebConfig struct {
 	Addr string
+	OIDC *OIDCConfig
 }
 
 type VPNConfig struct {
@@ -538,6 +543,24 @@ func parseWeb(path string, cfg *WebConfig, stmt conffile.Statement) error {
 					return err
 				}
 				cfg.Addr = value
+			case "oidc":
+				if nested.Block == nil {
+					return directiveError(path, "oidc", "expected block")
+				}
+				oidc := &OIDCConfig{}
+				for _, o := range nested.Block.Statements {
+					switch o.Key {
+					case "user_header":
+						value, err := requireSingleValue(path, o)
+						if err != nil {
+							return err
+						}
+						oidc.UserHeader = value
+					default:
+						return directiveError(path, o.Key, "unsupported oidc directive")
+					}
+				}
+				cfg.OIDC = oidc
 			default:
 				return directiveError(path, nested.Key, "unsupported web directive")
 			}
@@ -753,6 +776,11 @@ func validateWeb(cfg WebConfig) error {
 	}
 	if host == "" && !strings.HasPrefix(cfg.Addr, ":") {
 		return fmt.Errorf("web addr %q is invalid", cfg.Addr)
+	}
+	if cfg.OIDC != nil {
+		if strings.TrimSpace(cfg.OIDC.UserHeader) == "" {
+			return errors.New("oidc user_header is required")
+		}
 	}
 	return nil
 }

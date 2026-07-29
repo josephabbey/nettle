@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -24,10 +25,12 @@ type DNSService struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	store       *dnsRecordStore
-	unsubscribe func()
-	mu          sync.Mutex
-	started     bool
+	store           *dnsRecordStore
+	dynamicUpstream map[string]netip.Addr
+	upstreamMu      sync.RWMutex
+	unsubscribe     func()
+	mu              sync.Mutex
+	started         bool
 }
 
 type dnsRecordStore struct {
@@ -46,10 +49,11 @@ func NewDNS(cfg *config.Config, b bus.Bus, logger *slog.Logger) *DNSService {
 		logger = slog.Default()
 	}
 	return &DNSService{
-		cfg:   cfg,
-		bus:   b,
-		log:   logger.With("component", "dns"),
-		store: newDNSRecordStore(cfg.Hosts, cfg.Global.TLD),
+		cfg:             cfg,
+		bus:             b,
+		log:             logger.With("component", "dns"),
+		store:           newDNSRecordStore(cfg.Hosts, cfg.Global.TLD),
+		dynamicUpstream: make(map[string]netip.Addr),
 	}
 }
 
@@ -225,6 +229,15 @@ func (s *DNSService) serveDNS(w dns.ResponseWriter, r *dns.Msg) {
 		return
 	}
 
+	if q.Qtype == dns.TypeNS {
+		if nsRR := s.nsForZone(q.Name); len(nsRR) > 0 {
+			msg.Answer = append(msg.Answer, nsRR...)
+			msg.Authoritative = true
+			_ = w.WriteMsg(msg)
+			return
+		}
+	}
+
 	if record, ok := s.store.lookup(q.Name); ok {
 		if rr := recordToRR(q.Name, q.Qtype, record); len(rr) > 0 {
 			msg.Answer = append(msg.Answer, rr...)
@@ -240,6 +253,37 @@ func (s *DNSService) serveDNS(w dns.ResponseWriter, r *dns.Msg) {
 
 	msg.Rcode = dns.RcodeNameError
 	_ = w.WriteMsg(msg)
+}
+
+func (s *DNSService) nsForZone(name string) []dns.RR {
+	qName := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
+
+	s.upstreamMu.RLock()
+	defer s.upstreamMu.RUnlock()
+
+	for zone, addr := range s.dynamicUpstream {
+		zone = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(zone), "."))
+		if qName == zone {
+			return []dns.RR{&dns.NS{
+				Hdr: dns.RR_Header{
+					Name:   dns.Fqdn(name),
+					Rrtype: dns.TypeNS,
+					Class:  dns.ClassINET,
+					Ttl:    300,
+				},
+				Ns: dns.Fqdn(fmt.Sprintf("ns1.%s", zone)),
+			}, &dns.A{
+				Hdr: dns.RR_Header{
+					Name:   dns.Fqdn(fmt.Sprintf("ns1.%s", zone)),
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+					Ttl:    300,
+				},
+				A: net.IP(addr.AsSlice()),
+			}}
+		}
+	}
+	return nil
 }
 
 func (s *DNSService) isBlocked(name string) bool {
@@ -258,12 +302,36 @@ func (s *DNSService) isBlocked(name string) bool {
 	return false
 }
 
+func (s *DNSService) AddUpstream(zone string, addr netip.Addr) {
+	s.upstreamMu.Lock()
+	s.dynamicUpstream[canonicalDNSName(zone)] = addr
+	s.upstreamMu.Unlock()
+	s.log.Info("added dynamic upstream", "zone", zone, "addr", addr.String())
+}
+
+func (s *DNSService) RemoveUpstream(zone string) {
+	s.upstreamMu.Lock()
+	delete(s.dynamicUpstream, canonicalDNSName(zone))
+	s.upstreamMu.Unlock()
+	s.log.Info("removed dynamic upstream", "zone", zone)
+}
+
 func (s *DNSService) forwardUpstream(r *dns.Msg) (*dns.Msg, bool) {
 	if len(r.Question) == 0 {
 		return nil, false
 	}
 	q := r.Question[0]
 	name := strings.ToLower(strings.TrimSuffix(q.Name, "."))
+
+	s.upstreamMu.RLock()
+	for zone, addr := range s.dynamicUpstream {
+		zone = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(zone), "."))
+		if name == zone || strings.HasSuffix(name, "."+zone) {
+			s.upstreamMu.RUnlock()
+			return s.forwardTo(addr, r)
+		}
+	}
+	s.upstreamMu.RUnlock()
 
 	if len(s.cfg.DNS.RecursiveUpstreams) > 0 {
 		for zone, addr := range s.cfg.DNS.RecursiveUpstreams {

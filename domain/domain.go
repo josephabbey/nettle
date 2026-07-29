@@ -30,6 +30,7 @@ type Peer struct {
 	Name      string
 	Connected bool
 	Endpoint  string
+	PublicKey string
 }
 
 type DNSRecordUpserted struct {

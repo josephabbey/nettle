@@ -1,0 +1,8 @@
+nettle.example.com {
+    reverse_proxy nettle:8080
+
+    # Optional: OIDC authentication via Authelia
+    # authelia {
+    #     trust_forwarded_headers true
+    # }
+}

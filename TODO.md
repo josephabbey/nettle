@@ -25,8 +25,9 @@
 - [x] Domain blocklist (exact + wildcard suffixes)
 - [x] Bus subscription for `DNSRecordUpserted` events
 - [x] Wildcard record matching
-- [ ] NS record serving for connected Nettle instances (Connect component)
-- [ ] Automatic upstream registration from connected instances
+- [x] NS record serving for connected Nettle instances
+- [x] Dynamic upstream registration via `AddUpstream` / `RemoveUpstream`
+- [x] NS queries delegated to dynamic upstream zones
 
 ## DHCP Service (`services/dhcp.go`)
 
@@ -39,33 +40,44 @@
 - [x] DHCP lease assigned event publishing
 - [x] Classless static route serving (for VPN/Connect routes)
 - [x] Gateway, NTP, DNS server options
-- [ ] VPN client lease management (roaming between networks/WiFi/VPN)
 - [x] Lease persistence to disk
+- [ ] VPN client lease management (roaming between networks/WiFi/VPN)
+  - VPN publishes DNS records on connect/disconnect — IP follows the device
 
 ## VPN Service (`services/vpn.go`)
 
-- [ ] WireGuard server — **stub only**, no implementation
-- [ ] WireGuard interface management
-- [ ] Client key/configuration generation
-- [ ] LAN/WAN access for connected clients
-- [ ] Route announcement via bus for DHCP to serve
+- [x] WireGuard server — interface management, key generation, NAT
+- [x] WireGuard interface management via `netlink` + `wgctrl`
+- [x] Server key generation/persistence (`/var/lib/nettle/vpn/`)
+- [x] Client key/configuration generation (wg-quick format)
+- [x] Peer management (add/remove/list) with IPAM
+- [x] LAN/WAN access via iptables MASQUERADE + FORWARD rules
+- [x] Route announcement via bus for DHCP to serve
+- [x] Peer connection state monitoring + `PeerStateChanged` bus events
+- [x] Peer state persistence to disk
+- [x] DNS record publishing on peer connect for roaming support
 
 ## Connect Service (`services/connect.go`)
 
-- [ ] Nettle-to-Nettle tunnel — **stub only**, no implementation
-- [ ] WireGuard tunnel management
-- [ ] Handshake protocol
-- [ ] IP range collision detection
-- [ ] Static route setup across LANs
-- [ ] QR code pairing flow
-- [ ] Web UI pairing interface
-- [ ] DNS NS record registration for connected instances
-- [ ] Cross-LAN device accessibility
+- [x] WireGuard tunnel management per connection target
+- [x] Glue key generation/persistence per address (`/var/lib/nettle/connect/`)
+- [x] Remote peer configuration (public key, endpoint, prefix) via `SetRemotePeer`
+- [x] Static route setup across LANs via netlink
+- [x] Route announcement via bus for DHCP
+- [x] Dynamic DNS upstream registration via `DNSService.AddUpstream`
+- [x] DNS record announcement for connected instances
+- [x] Tunnel list/status API
+- [ ] Handshake/pairing protocol (QR code exchange)
+- [ ] IP range collision detection during handshake
+- [ ] Cross-LAN device accessibility via DNS forwarding — **partial** (upstream works, forward zones pending)
 
 ## Web Service (`services/web.go`)
 
 - [x] HTTP server with embedded assets
 - [x] REST API: `/api/state`, `/api/leases`, `/api/dns-records`, `/api/static-hosts`
+- [x] REST API: `/api/vpn/peers`, `/api/vpn/generate`
+- [x] REST API: `/api/connect/tunnels`, `/api/connect/pair`
+- [x] REST API: `/api/network` (aggregated graph data)
 - [x] Server-Sent Events (SSE) live feed at `/events`
 - [x] Consumes bus events: leases, DNS records, static hosts
 - [x] Health check endpoint (`/healthz`)
@@ -78,13 +90,11 @@
 - [x] Static IPs table with filter
 - [x] Real-time updates via SSE
 - [x] Dark theme CSS
-- [ ] VPN configuration generation page
-- [ ] VPN connections table/status
-- [ ] Network map (graph visualization of connections/routes)
-- [ ] OIDC/Authelia authentication integration
-- [ ] Connect pairing/handshake page
-- [ ] VPN client config download
-- [ ] Caddy reverse-proxy guidance or auto-config
+- [x] VPN config generation form + config download button
+- [x] VPN peer table (name, status dot, endpoint, remove button)
+- [x] Connect pairing form (target, endpoint, public key, prefix)
+- [x] Connect tunnel table with status
+- [x] Network map SVG graph (leases, VPN peers, Connect tunnels)
 
 ## Event Bus (`bus/`)
 
@@ -95,7 +105,7 @@
 
 ## Domain Types (`domain/`)
 
-- [x] `DNSRecord`, `Lease`, `Route`, `Peer`, `StaticHost`
+- [x] `DNSRecord`, `Lease`, `Route`, `Peer` (with `PublicKey`), `StaticHost`
 - [x] Event wrappers: `DNSRecordUpserted`, `DHCPLeaseAssigned`, `RouteAnnounced`, `PeerStateChanged`, `StaticHostUpserted`
 - [x] `EnsureTLD` helper
 
@@ -108,10 +118,10 @@
 
 ## Infrastructure
 
-- [x] `main.go` wiring all services
+- [x] `main.go` wiring all services (DNS → Connect → Web)
 - [x] Graceful shutdown (SIGINT/SIGTERM)
-- [x] Dockerfile
-- [x] docker-compose (`compose.yaml`)
+- [x] Dockerfile with iptables + WireGuard deps
+- [x] docker-compose with `NET_ADMIN` + tun device + state volume
 - [x] GitHub Actions workflow (Docker publish)
 - [x] Config validation mode (`-validate` flag)
 - [x] Example `Nettlefile` in `test/` and `docker/`

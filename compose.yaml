@@ -4,9 +4,20 @@ services:
       context: .
     image: ghcr.io/josephabbey/nettle:local
     restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_MODULE
+    devices:
+      - /dev/net/tun
     environment:
       NETTLE_CONFIG: /config/Nettlefile
     volumes:
       - ./docker/Nettlefile:/config/Nettlefile:ro
+      - nettle-state:/var/lib/nettle
     ports:
       - "1053:1053/udp"
+      - "51820:51820/udp"
+
+volumes:
+  nettle-state:

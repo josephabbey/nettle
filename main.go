@@ -85,12 +85,20 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	dns := services.NewDNS(cfg, hub, logger)
+	vpn := services.NewVPN(cfg, hub, logger)
+	connect := services.NewConnect(cfg, hub, logger)
+	connect.SetDNS(dns)
+	web := services.NewWeb(cfg, hub, logger)
+	web.SetVPN(vpn)
+	web.SetConnect(connect)
+
 	runtime := []services.Service{
-		services.NewDNS(cfg, hub, logger),
+		dns,
 		services.NewDHCP(cfg, hub, logger),
-		services.NewVPN(cfg, hub, logger),
-		services.NewConnect(cfg, hub, logger),
-		services.NewWeb(cfg, hub, logger),
+		vpn,
+		connect,
+		web,
 	}
 
 	started := 0

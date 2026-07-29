@@ -18,6 +18,13 @@ RUN set -eu; \
 
 FROM debian:bookworm-slim AS runtime
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    iptables \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /var/lib/nettle/vpn /var/lib/nettle/connect
+
 WORKDIR /app
 COPY --from=build /out/nettle /usr/local/bin/nettle
 COPY docker/Nettlefile /etc/nettle/Nettlefile
@@ -27,6 +34,7 @@ RUN chmod +x /usr/local/bin/nettle-entrypoint
 ENV NETTLE_CONFIG=/etc/nettle/Nettlefile
 
 EXPOSE 1053/udp
+EXPOSE 51820/udp
 
 ENTRYPOINT ["/usr/local/bin/nettle-entrypoint"]
 CMD []

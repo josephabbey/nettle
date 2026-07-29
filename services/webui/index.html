@@ -3,73 +3,44 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Nettle Monitor</title>
+  <title>Nettle</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5.1.0/files/inter-latin-400-normal.woff2">
   <link rel="stylesheet" href="/assets/styles.css">
-  <script defer src="/assets/app.js"></script>
 </head>
 <body>
-  <header>
-    <div class="eyebrow">Nettle monitoring console</div>
-    <h1>Live leases and DNS records</h1>
-    <div class="summary">
-      <div>State refreshed at <strong id="generated-at">waiting...</strong></div>
-      <div>Live feed <strong id="feed-status">connecting</strong></div>
+  <header class="header">
+    <div class="header-inner">
+      <h1 class="header-title">nettle</h1>
+      <div class="header-meta">
+        <span>Refreshed <strong id="generated-at">--</strong></span>
+        <span class="sep">|</span>
+        <span>Feed <strong id="feed-status" class="status-connecting">connecting</strong></span>
+        <span class="sep">|</span>
+        <span class="stat"><span id="lease-count">0</span> leases</span>
+        <span class="stat"><span id="dns-count">0</span> dns</span>
+        <span class="stat"><span id="static-count">0</span> static</span>
+      </div>
     </div>
   </header>
-  <main>
-    <section class="cards" id="cards">
-      <div class="card">
-        <div class="label">Leases</div>
-        <div class="value" id="lease-count">0</div>
-        <div class="sub">DHCP allocations currently tracked</div>
-      </div>
-      <div class="card">
-        <div class="label">DNS records</div>
-        <div class="value" id="dns-count">0</div>
-        <div class="sub">Local names and dynamic host records</div>
-      </div>
-      <div class="card">
-        <div class="label">Static IPs</div>
-        <div class="value" id="static-count">0</div>
-        <div class="sub">Statically assigned host entries</div>
-      </div>
-      <div class="card">
-        <div class="label">Lease focus</div>
-        <div class="value" id="lease-active">0</div>
-        <div class="sub">Matching rows in the current filter</div>
-      </div>
-      <div class="card">
-        <div class="label">DNS focus</div>
-        <div class="value" id="dns-active">0</div>
-        <div class="sub">Matching rows in the current filter</div>
-      </div>
-      <div class="card">
-        <div class="label">Static focus</div>
-        <div class="value" id="static-active">0</div>
-        <div class="sub">Matching rows in the current filter</div>
-      </div>
-    </section>
 
-    <section class="panel">
-      <div class="panel-head">
-        <div>
-          <h2>Leases</h2>
-          <div class="meta">Search by host, MAC address, IP, interface, or expiry time.</div>
-        </div>
-        <div class="filters">
-          <input id="lease-filter" type="search" placeholder="Filter leases">
-        </div>
+  <main class="main">
+    <section class="section" id="leases-section">
+      <div class="section-head">
+        <h2>DHCP Leases</h2>
+        <input type="search" id="lease-filter" class="search-input" placeholder="Search leases (supports * and ?)">
       </div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Hostname</th>
-              <th>Hardware Addr</th>
-              <th>Address</th>
-              <th>Interface</th>
-              <th>Lease Until</th>
-              <th>Updated</th>
+              <th data-sort="hostname">Hostname</th>
+              <th data-sort="hardwareAddr">MAC</th>
+              <th data-sort="address">Address</th>
+              <th data-sort="interface">Interface</th>
+              <th data-sort="leaseUntil">Lease Until</th>
+              <th data-sort="updatedAt">Updated</th>
             </tr>
           </thead>
           <tbody id="lease-body"></tbody>
@@ -77,25 +48,20 @@
       </div>
     </section>
 
-    <section class="panel">
-      <div class="panel-head">
-        <div>
-          <h2>DNS records</h2>
-          <div class="meta">Search by name, address, or CNAME target.</div>
-        </div>
-        <div class="filters">
-          <input id="dns-filter" type="search" placeholder="Filter DNS records">
-        </div>
+    <section class="section" id="dns-section">
+      <div class="section-head">
+        <h2>DNS Records</h2>
+        <input type="search" id="dns-filter" class="search-input" placeholder="Search DNS (e.g. *.example.com)">
       </div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Name</th>
-              <th>Type</th>
-              <th>Address</th>
-              <th>CNAME</th>
-              <th>Updated</th>
+              <th data-sort="name">Name</th>
+              <th data-sort="type">Type</th>
+              <th data-sort="address">Address</th>
+              <th data-sort="cname">CNAME</th>
+              <th data-sort="updatedAt">Updated</th>
             </tr>
           </thead>
           <tbody id="dns-body"></tbody>
@@ -103,29 +69,140 @@
       </div>
     </section>
 
-    <section class="panel">
-      <div class="panel-head">
-        <div>
-          <h2>Static IPs</h2>
-          <div class="meta">Permanent assignments from config, hosts, and ethers.</div>
-        </div>
-        <div class="filters">
-          <input id="static-filter" type="search" placeholder="Filter static IPs">
-        </div>
+    <section class="section" id="static-section">
+      <div class="section-head">
+        <h2>Static IPs</h2>
+        <input type="search" id="static-filter" class="search-input" placeholder="Search static IPs">
       </div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Hostname</th>
-              <th>Hardware Addr</th>
-              <th>Address</th>
+              <th data-sort="hostname">Hostname</th>
+              <th data-sort="hardwareAddr">MAC</th>
+              <th data-sort="address">Address</th>
             </tr>
           </thead>
           <tbody id="static-body"></tbody>
         </table>
       </div>
     </section>
+
+    <section class="section" id="network-panel">
+      <div class="section-head">
+        <h2>Network Map</h2>
+        <button id="network-refresh" class="btn">Refresh</button>
+      </div>
+      <div id="cy-network" class="network-container"></div>
+    </section>
+
+    <section class="section" id="connect-panel">
+      <div class="section-head">
+        <h2>Connect</h2>
+        <button id="connect-refresh" class="btn">Refresh</button>
+      </div>
+      <div class="section-body">
+        <div id="connect-glue-info" class="glue-info"></div>
+        <div id="connect-glue-qr" class="glue-qr-row"></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Local</th>
+                <th>Remote</th>
+                <th>Status</th>
+                <th>Endpoint</th>
+                <th>Prefix</th>
+              </tr>
+            </thead>
+            <tbody id="connect-tunnels-body"></tbody>
+          </table>
+        </div>
+        <div class="section-form">
+          <h3>Pair with remote Nettle</h3>
+          <form id="connect-pair-form" class="form-grid">
+            <div class="form-row">
+              <div class="form-group">
+                <label for="connect-target">Target name</label>
+                <input id="connect-target" type="text" placeholder="e.g. spires.cloud">
+              </div>
+              <div class="form-group">
+                <label for="connect-endpoint">Endpoint (optional)</label>
+                <input id="connect-endpoint" type="text" placeholder="spires.cloud:51820">
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="connect-pubkey">Remote public key</label>
+                <input id="connect-pubkey" type="text" placeholder="base64 encoded public key">
+              </div>
+              <div class="form-group">
+                <label for="connect-prefix">Remote LAN prefix</label>
+                <input id="connect-prefix" type="text" placeholder="e.g. 192.168.1.0/24">
+              </div>
+            </div>
+            <button type="submit" class="btn btn-primary">Pair</button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="vpn-panel">
+      <div class="section-head">
+        <h2>VPN</h2>
+        <button id="vpn-refresh" class="btn">Refresh</button>
+      </div>
+      <div class="section-body">
+        <div class="mono-info-row">
+          <div id="vpn-server-key" class="mono-info"></div>
+          <div id="vpn-server-qr" class="qr-wrap"></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Status</th>
+                <th>Endpoint</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="vpn-peers-body"></tbody>
+          </table>
+        </div>
+        <div class="section-form">
+          <h3>Generate client config</h3>
+          <form id="vpn-generate-form" class="form-grid">
+            <div class="form-row">
+              <div class="form-group">
+                <label for="vpn-name">Client name</label>
+                <input id="vpn-name" type="text" placeholder="e.g. joseph-phone" required>
+              </div>
+              <div class="form-group">
+                <label for="vpn-endpoint">Server endpoint</label>
+                <input id="vpn-endpoint" type="text" placeholder="vpn.example.com" required>
+              </div>
+            </div>
+            <button type="submit" class="btn btn-primary">Generate config</button>
+          </form>
+          <div id="vpn-result" class="vpn-result" style="display:none;">
+            <h4>Client configuration</h4>
+            <p class="text-muted">Save this private key — it will only be shown once.</p>
+            <div id="vpn-result-private" class="key-display"></div>
+            <textarea id="vpn-result-config" readonly rows="10"></textarea>
+            <div class="qr-result-row">
+              <div id="vpn-result-qr" class="qr-wrap"></div>
+              <div class="qr-label">Scan with WireGuard mobile app</div>
+            </div>
+            <button id="vpn-download-btn" class="btn">Download config</button>
+          </div>
+        </div>
+      </div>
+    </section>
   </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.31.2/dist/cytoscape.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script defer src="/assets/app.js"></script>
 </body>
 </html>
